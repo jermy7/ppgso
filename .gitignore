@@ -3,3 +3,4 @@ _*
 src/playground/playground.cpp
 data/raw*
 data/task*
+cmake-build-*

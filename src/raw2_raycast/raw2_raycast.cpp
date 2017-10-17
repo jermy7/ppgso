@@ -6,6 +6,10 @@
 
 #include <iostream>
 #include <ppgso/ppgso.h>
+#include <atomic>
+#include <math.h>
+#include <mutex>
+#include <iomanip>
 
 using namespace std;
 using namespace glm;
@@ -38,6 +42,7 @@ struct Ray {
 struct Material {
   dvec3 emission, diffuse;
   double shininess;
+  double reflectivity;
 };
 
 /*!
@@ -157,6 +162,10 @@ struct World {
   Camera camera;
   vector<Light> lights;
   vector<Sphere> spheres;
+  mutable std::atomic<unsigned long> samplesCounter = {0};
+  mutable std::atomic<unsigned long> raysCounter = {0};
+  mutable std::atomic<unsigned long> totalCounter = {0};
+
 
   /*!
    * Compute ray to object collision with any object in the world
@@ -181,38 +190,58 @@ struct World {
    * @param depth Maximum number of collisions to trace
    * @return Color representing the accumulated lighting for earch ray collision
    */
-  inline dvec3 trace(const Ray &ray) const {
+  inline dvec3 trace(const Ray &ray, unsigned int depth) const {
+    if (depth == 0) return {0, 0, 0};
+
     Hit hit = cast(ray);
 
     // No hit
     if (hit.distance >= INF) return {0, 0, 0};
 
-    // Phong components
-    dvec3 ambientColor = {0.1, 0.1, 0.1};
-    dvec3 emissionColor = hit.material.emission;
-    dvec3 diffuseColor = {0,0,0};
-    dvec3 specularColor = {0,0,0};
-    for( auto& light : lights) {
-      auto lightDirection = light.position - hit.point;
-      auto lightDistance = length(lightDirection);
-      auto lightNormal = normalize(lightDirection);
-      Ray lightRay = {hit.point + hit.normal * DELTA, lightNormal};
+    dvec3 color;
+    if (linearRand(0.0, 1.0) >= hit.material.reflectivity) {
+      // Phong components
+      dvec3 ambientColor = {0.1, 0.1, 0.1};
+      dvec3 emissionColor = hit.material.emission;
+      dvec3 diffuseColor = {0,0,0};
+      dvec3 specularColor = {0,0,0};
+      for( auto& light : lights) {
+        auto lightDirection = light.position - hit.point;
+        auto lightDistance = length(lightDirection);
+        auto lightNormal = normalize(lightDirection);
+        Ray lightRay = {hit.point + hit.normal * DELTA, lightNormal};
 
-      // Light is obscured by object
-      auto shadowTest = cast(lightRay);
-      if(shadowTest.distance < lightDistance ) continue;
+        // Light is obscured by object
+        auto shadowTest = cast(lightRay);
+        if(shadowTest.distance < lightDistance ) continue;
 
-      // Light is visible
-      auto att_factor = 1.0 / (light.att_const + light.att_linear * lightDistance + light.att_quad * lightDistance * lightDistance);
-      auto dif = glm::clamp(dot(lightRay.direction, hit.normal), 0.0, 1.0);
-      diffuseColor += hit.material.diffuse * att_factor * light.color * dif;
+        // Light is visible
+        auto att_factor = 1.0 / (light.att_const + light.att_linear * lightDistance + light.att_quad * lightDistance * lightDistance);
+        auto dif = glm::clamp(dot(lightRay.direction, hit.normal), 0.0, 1.0);
+        diffuseColor += hit.material.diffuse * att_factor * light.color * dif;
 
-      auto spec = glm::clamp(dot(reflect(ray.direction, hit.normal), lightRay.direction), 0.0, 1.0);
-      specularColor += light.color * att_factor * pow(spec, hit.material.shininess);
+        auto spec = glm::clamp(dot(reflect(ray.direction, hit.normal), lightRay.direction), 0.0, 1.0);
+        specularColor += light.color * att_factor * pow(spec, hit.material.shininess);
+      }
+
+      // Additive lighting result
+      color = ambientColor + emissionColor + diffuseColor + specularColor;
+    } else {
+      // Calculate reflection
+      // Random diffuse reflection
+      dvec3 diffuse = RandomDome(hit.normal);
+      // Ideal specular reflection
+      dvec3 reflection = reflect(ray.direction, hit.normal);
+      // Ray that combines reflection direction depending on the material reflectivness
+      Ray reflectedRay{hit.point + hit.normal * DELTA, reflection};
+      // Reflection color is white for specular reflections, otherwise diffuse color is used
+      dvec3 reflectionColor = lerp(hit.material.diffuse, {1, 1, 1}, hit.material.reflectivity);
+      // Trace the ray recursively
+
+      color += reflectionColor * trace(reflectedRay, depth - 1);
     }
 
-    // Additive lighting result
-    dvec3 color = ambientColor + emissionColor + diffuseColor + specularColor;
+    raysCounter++;
 
     return clamp(color, 0.0, 1.0);
   }
@@ -221,19 +250,44 @@ struct World {
    * Render the world to the provided image
    * @param image Image to render to
    */
-  void render(Image& image, unsigned int samples) const {
+  void render(Image& image, unsigned int samples, unsigned int depth) const {
     // Render section of the framebuffer
+    int imageTotal = image.width * image.height;
+    clock_t start = clock();
+    std::mutex mtx;
+
+    #pragma omp parallel for
     for(int y = 0; y < image.height; ++y) {
       for (int x = 0; x < image.width; ++x) {
         dvec3 color;
         for (unsigned int i = 0; i < samples; i++) {
           auto ray = camera.generateRay(x, y, image.width, image.height);
-          color = color + trace(ray);
+          color = color + trace(ray, depth);
+          samplesCounter++;
         }
+
         color = color / (double) samples;
         image.setPixel(x, y, (float) color.r, (float) color.g, (float) color.b);
       }
+
+      totalCounter += image.width;
+
+      auto prog = clock();
+      double t = double(prog - start) / CLOCKS_PER_SEC;
+      double perc = round(double(totalCounter) / imageTotal * 10000) / 100;
+      double sampCnt = double(samplesCounter) / t;
+      double raysCnt = double(raysCounter) / t;
+
+      {
+        std::lock_guard<std::mutex> lock(mtx);
+        cout << "Progress [" << setw(6) << perc << "%] | "
+             << setw(14) << sampCnt << " samples/sec. | "
+             << setw(14) << raysCnt << " rays/sec.\r";
+      }
     }
+
+    clock_t end = clock();
+    cout << endl << "Execution takes: " << double(end - start) / CLOCKS_PER_SEC << " seconds" << endl;
   }
 };
 
@@ -244,33 +298,37 @@ int main() {
   // World to render
   const World world = {
       { // Camera
-          {  0,   0, 25}, // pos
-          {  0,   0,  1}, // back
-          {  0,  .5,  0}, // up
-          { .5,   0,  0}, // right
+          { -5,  -5,   5}, // pos
+          {  0,   0,   1}, // back
+          {  0,  .5,   0}, // up
+          { .5,   0,   0}, // right
       },
       { // Lights
           { {-5, 5, 9}, {1, 1, 1}, 1, .1, 0 },
           { { 5, 0, 15}, {0.2, 0.5, 0.2}, 1, .1, .01 },
       },
       { // Spheres
-          { 10000, {  0, -10010, 0}, { {0, 0, 0}, {.8, .8, .8}, 1 } },
-          { 10000, { -10010, 0, 0}, { { 0, 0, 0}, { 1, 0, 0}, 1 } },
-          { 10000, {  10010, 0, 0}, { { 0, 0, 0}, { 0, 1, 0}, 1 } },
-          { 10000, {  0,0, -10010}, { { 0, 0, 0}, { .8, .8, 0}, 1 } },
-          { 10000, {  0,10010, 0}, { { .3, .3, .3}, { .8, .8, .8}, 1 } },
-          {     2, { -5,  -8,  3}, { { 0, 0, 0}, { .7, .7, 0}, 3 } },
-          {     4, {  0,  -6,  0}, { { 0, 0, 0}, { .7, .5, .1}, 5 } },
-          {    10, {  10, 10, -10}, { { 0, 0, 0}, { 0, 0, 1}, 30 } },
-      },
+          { 10000, {  0, -10010, 0}, { { 0,  0,  0}, {.8, .8, .8},  1, 0 } },
+          { 10000, { -10010, 0,  0}, { { 0,  0,  0}, { 1,  0,  0},  1, 0 } },
+          { 10000, {  10010, 0,  0}, { { 0,  0,  0}, { 0,  1,  0},  1, 0 } },
+          { 10000, {  0,0,  -10010}, { { 0,  0,  0}, { 1,  1,  1}, 50, 1 } },
+          { 10000, {  0,0,   10050}, { {.3, .3, .3}, { 1,  1,  1}, 50, 1 } },
+          { 10000, {  0,10010,   0}, { {.3, .3, .3}, {.8, .8, .8},  1, 0 } },
+          {     2, { -5,  -8,    3}, { { 0,  0,  0}, {.7, .7,  0},  3, 0 } },
+          {     4, {  0,  -6,    0}, { { 0,  0,  0}, {.7, .5, .1},  5, 0 } },
+          {    10, {  10, 10,  -10}, { { 0,  0,  0}, { 0,  0,  1}, 30, 0 } },
+      }
   };
 
   // Render the scene
-  world.render(image, 4);
+  world.render(image, 32, 10);
 
   // Save the result
   image::saveBMP(image, "raw2_raycast.bmp");
 
   cout << "Done." << endl;
+
+  //cin.get();
+
   return EXIT_SUCCESS;
 }
