@@ -34,14 +34,14 @@ struct TransformedShape final : public Shape {
     glm::mat4 inverse = glm::inverse(matrix);
 
     // Transform ray to object space
-    Ray transformedRay = { inverse * glm::vec4{ray.origin, 1.0f}, inverse * glm::vec4{ray.direction, 0.0f} };
+    Ray transformedRay = { glm::vec3(inverse * glm::vec4{ray.origin, 1.0f}), glm::vec3(inverse * glm::vec4{ray.direction, 0.0f}) };
 
     // Hit in object space
     auto hit = shape->intersect(transformedRay);
 
     // Transform to world space
-    hit.position = matrix * glm::vec4{hit.position, 1.0f};
-    hit.normal = glm::normalize(matrix * glm::vec4{hit.normal, 0.0f});
+    hit.position = glm::vec3(matrix * glm::vec4{hit.position, 1.0f});
+    hit.normal = glm::normalize(glm::vec3(matrix * glm::vec4{hit.normal, 0.0f}));
 
     return hit;
   }

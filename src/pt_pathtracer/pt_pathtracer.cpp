@@ -92,8 +92,8 @@ public:
     auto& samples = renderer.samples;
 
     // Generate the framebuffer
-    #pragma omp parallel for
     auto& image = framebuffer.image;
+    #pragma omp parallel for
     for (int y = 0; y < image.height; ++y) {
       for (int x = 0; x < image.width; ++x) {
         Color& color = samples[image.width*y+x].color;
@@ -110,9 +110,6 @@ public:
 
     // Render the quad geometry
     quad.render();
-
-    // Update the window contents
-    swap();
   }
 };
 

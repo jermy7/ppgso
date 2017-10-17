@@ -16,8 +16,8 @@ struct Box final : public Shape {
     Vector f1 = (max - ray.origin) / ray.direction;
     auto n = glm::min(n1,f1);
     auto f = glm::max(n1,f1);
-    float t0 = std::max({n.x, n.y, n.z});
-    float t1 = std::min({f.x, f.y, f.z});
+    float t0 = std::max(std::max(n.x, n.y), n.z);
+    float t1 = std::min(std::min(f.x, f.y), f.z);
 
     Vector point = ray.point(t0);
     Vector normal;

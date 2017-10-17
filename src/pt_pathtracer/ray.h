@@ -67,6 +67,6 @@ inline Direction CosineSampleHemisphere(const Direction &normal)
       glm::normalize(glm::cross(normal, directionNotNormal));
 
   return up * normal
-         + cos(around) * over * perpendicularDirection
-         + sin(around) * over * (glm::normalize(glm::cross(normal, perpendicularDirection)));
+         + std::cos(around) * over * perpendicularDirection
+         + std::sin(around) * over * (glm::normalize(glm::cross(normal, perpendicularDirection)));
 }
