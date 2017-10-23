@@ -5,6 +5,7 @@
 
 #include <iostream>
 #include <ppgso/ppgso.h>
+#include <glm/gtx/euler_angles.hpp>
 
 using namespace std;
 using namespace glm;
@@ -13,7 +14,7 @@ using namespace ppgso;
 // Global constants
 constexpr double INF = numeric_limits<double>::max();       // Will be used for infinity
 constexpr double EPS = numeric_limits<double>::epsilon();   // Numerical epsilon
-const double DELTA = sqrt(EPS);                             // Delta to use
+const double DELTA = sqrt(EPS);                         // Delta to use
 
 /*!
  * Structure holding origin and direction that represents a ray
@@ -55,32 +56,13 @@ struct Hit {
 const Hit noHit{ INF, {0,0,0}, {0,0,0}, { {0,0,0}, {0,0,0}, 0, 0, 0 } };
 
 /*!
- * Structure representing a simple camera that is composed on position, up, back and right vectors
+ * Vertex structure to hold per vertex data in
  */
-struct Camera {
-  dvec3 position, back, up, right;
-
-  /*!
-   * Generate a new Ray for the given viewport size and position
-   * @param x Horizontal position in the viewport
-   * @param y Vertical position in the viewport
-   * @param width Width of the viewport
-   * @param height Height of the viewport
-   * @return Ray for the giver viewport position with small random deviation applied to support multi-sampling
-   */
-  Ray generateRay(int x, int y, int width, int height) const {
-    // Camera deltas
-    dvec3 vdu = 2.0 * right / (double)width;
-    dvec3 vdv = 2.0 * -up / (double)height;
-
-    Ray ray;
-    ray.origin = position;
-    ray.direction = -back
-                  + vdu * ((double)(-width/2 + x) + linearRand(0.0, 1.0))
-                  + vdv * ((double)(-height/2 + y) + linearRand(0.0, 1.0));
-    ray.direction = normalize(ray.direction);
-    return ray;
-  }
+struct Vertex {
+  vec4 position;
+  vec4 normal;
+  vec2 texCoord;
+  vec4 color;
 };
 
 /*!
@@ -90,6 +72,12 @@ struct Sphere {
   double radius;
   dvec3 center;
   Material material;
+
+  Sphere(double radius, dvec3 center, Material m) {
+    this->radius = radius;
+    this->center = center;
+    this->material = m;
+  }
 
   /*!
    * Compute ray to sphere collision
@@ -122,6 +110,67 @@ struct Sphere {
       }
     }
     return noHit;
+  }
+};
+
+/*!
+ * Face structure to hold three vertices that form a triangle/face
+ */
+struct Triangle {
+  Vertex v0, v1, v2;
+
+  inline Hit hit(const Ray& ray) const {
+    return noHit;
+  }
+};
+
+struct Mesh {
+  vector<Triangle> Tirangles;
+
+  inline Hit hit(const Ray& ray) const {
+    return noHit;
+  }
+};
+
+/*!
+ * Load Wavefront obj file data as vector of faces for simplicity
+ * @return vector of Faces that can be rendered
+ */
+Mesh loadObjFile(const string filename) {
+  // Using tiny obj loader from ppgso lib
+  vector<tinyobj::shape_t> shapes;
+  vector<tinyobj::material_t> materials;
+  string err = tinyobj::LoadObj(shapes, materials, filename.c_str());
+
+
+};
+
+/*!
+ * Structure representing a simple camera that is composed on position, up, back and right vectors
+ */
+struct Camera {
+  dvec3 position, back, up, right;
+
+  /*!
+   * Generate a new Ray for the given viewport size and position
+   * @param x Horizontal position in the viewport
+   * @param y Vertical position in the viewport
+   * @param width Width of the viewport
+   * @param height Height of the viewport
+   * @return Ray for the giver viewport position with small random deviation applied to support multi-sampling
+   */
+  Ray generateRay(int x, int y, int width, int height) const {
+    // Camera deltas
+    dvec3 vdu = 2.0 * right / (double)width;
+    dvec3 vdv = 2.0 * -up / (double)height;
+
+    Ray ray;
+    ray.origin = position;
+    ray.direction = -back
+                  + vdu * ((double)(-width/2 + x) + linearRand(0.0, 1.0))
+                  + vdv * ((double)(-height/2 + y) + linearRand(0.0, 1.0));
+    ray.direction = normalize(ray.direction);
+    return ray;
   }
 };
 

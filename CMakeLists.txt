@@ -121,6 +121,13 @@ add_executable(raw4_raster src/raw4_raster/raw4_raster.cpp)
 target_link_libraries(raw4_raster ppgso)
 install(TARGETS raw4_raster DESTINATION .)
 
+# pt_pathtracer
+add_executable(pt_pathtracer
+    src/pt_pathtracer/pt_pathtracer.cpp
+    )
+target_link_libraries(pt_pathtracer ppgso shaders)
+install(TARGETS pt_pathtracer DESTINATION .)
+
 # gl1_gradient
 add_executable(gl1_gradient src/gl1_gradient/gl1_gradient.cpp)
 target_link_libraries(gl1_gradient ppgso shaders)
