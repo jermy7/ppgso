@@ -8,6 +8,10 @@
 #include <mutex>
 #include <iomanip>
 #include <atomic>
+#include <memory>
+
+#include <glm/gtx/euler_angles.hpp>
+#include <glm/gtx/transform.hpp>
 
 using namespace std;
 using namespace glm;
@@ -16,7 +20,7 @@ using namespace ppgso;
 // Global constants
 constexpr double INF = numeric_limits<double>::max();       // Will be used for infinity
 constexpr double EPS = numeric_limits<double>::epsilon();   // Numerical epsilon
-const double DELTA = sqrt(EPS);                             // Delta to use
+const double DELTA = sqrt(EPS);
 
 /*!
  * Structure holding origin and direction that represents a ray
@@ -55,12 +59,51 @@ struct Hit {
 /*!
  * Constant for collisions that have not hit any object in the scene
  */
-const Hit noHit{INF, {0, 0, 0}, {0, 0, 0}, {{0, 0, 0}, {0, 0, 0}, 0, 0, 0}};
+const Hit noHit{INF, {0, 0, 0}, {0, 0, 0}, {{0, 0, 0}, {0, 0, 0}, 0, 0, 0}};                           // Delta to use
+
+// Shape interface
+struct Shape {
+    virtual ~Shape() = default;
+    virtual Hit hit(const Ray& ray) const = 0;
+};
+
+// Shape with model matrix that can transform any other shape
+struct TransformedShape final : public Shape {
+    std::unique_ptr<Shape> shape;
+    vec3 rotation = {0, 0, 0};
+    vec3 scale = {1, 1, 1};
+    vec3 position = {0, 0, 0};
+
+    template<typename T>
+    TransformedShape(T s) : shape{std::make_unique<T>(std::move(s))} {}
+
+    virtual Hit hit(const Ray& ray) const override {
+        // Compute model matrix and inverse
+        glm::mat4 matrix = glm::translate(glm::mat4(1.0f), position)
+                           * glm::orientate4(rotation)
+                           * glm::scale(glm::mat4(1.0f), scale);
+        glm::mat4 inverse = glm::inverse(matrix);
+
+        // Transform ray to object space
+        Ray transformedRay = { glm::vec3(inverse * glm::vec4{ray.origin, 1.0f}), glm::vec3(inverse * glm::vec4{ray.direction, 0.0f}) };
+
+        // Hit in object space
+        auto hit = shape->hit(transformedRay);
+
+        // Transform to world space
+        hit.point = glm::vec3(matrix * glm::vec4{hit.point, 1.0f});
+        hit.normal = glm::normalize(glm::vec3(matrix * glm::vec4{hit.normal, 0.0f}));
+
+        return hit;
+//        return shape->hit(ray);
+    }
+
+};
 
 /*!
  * Structure representing a sphere which is defined by its center position, radius and material
  */
-struct Sphere {
+struct Sphere : Shape {
     double radius;
     dvec3 center;
     Material material;
@@ -108,9 +151,16 @@ struct Sphere {
 /*!
  * Face structure to hold three vertices that form a triangle/face
  */
-struct Triangle {
+struct Triangle : Shape {
     dvec3 v0, v1, v2;
     Material material;
+
+    Triangle(dvec3 v0, dvec3 v1, dvec3 v2, Material material) {
+        this->v0 = v0;
+        this->v1 = v1;
+        this->v2 = v2;
+        this->material = material;
+    }
 
     inline Hit hit(const Ray &ray) const {
 
@@ -183,7 +233,7 @@ struct Mesh {
  * Load Wavefront obj file data as vector of faces for simplicity
  * @return vector of Faces that can be rendered
  */
-vector<Triangle> loadObjFile(const string filename) {
+vector<TransformedShape> loadObjFile(const string filename) {
     // Using tiny obj loader from ppgso lib
     vector<tinyobj::shape_t> shapes;
     vector<tinyobj::material_t> materials;
@@ -197,33 +247,55 @@ vector<Triangle> loadObjFile(const string filename) {
     for (int i = 0; i < (int) mesh.positions.size() / 3; ++i)
         positions.emplace_back(mesh.positions[3 * i], mesh.positions[3 * i + 1], mesh.positions[3 * i + 2], 1);
 
-    double scale = 100.0;
+    vec3 rotation = {0, 0, 0};
+    vec3 scale = {40, 40, 1};
+    vec3 position = {0, -10, 0};
+
+    glm::mat4 matrix = glm::translate(glm::mat4(1.0f), position)
+                       * glm::orientate4(rotation)
+                       * glm::scale(glm::mat4(1.0f), scale);
+    glm::mat4 inverse = glm::inverse(matrix);
+
     // Fill the vector of Faces with data
-    vector<Triangle> triangles(mesh.indices.size() / 3);
-    for (int i = 0; i < (int) triangles.size(); i++) {
-        triangles[i] = Triangle{
+    vector<TransformedShape> triangles;
+    for (int i = 0; i < (int)mesh.positions.size() / 3; i++) {
+        Triangle tr {
             { // v0
-                    positions[mesh.indices[i * 3]].x * scale,
-                    positions[mesh.indices[i * 3]].y * scale,
-                    positions[mesh.indices[i * 3]].z * scale,
+                    positions[mesh.indices[i * 3]].x,
+                    positions[mesh.indices[i * 3]].y,
+                    positions[mesh.indices[i * 3]].z,
             },
             { // v1
-                    positions[mesh.indices[i * 3 + 1]].x * scale,
-                    positions[mesh.indices[i * 3 + 1]].y * scale,
-                    positions[mesh.indices[i * 3 + 1]].z * scale
+                    positions[mesh.indices[i * 3 + 1]].x,
+                    positions[mesh.indices[i * 3 + 1]].y,
+                    positions[mesh.indices[i * 3 + 1]].z
             },
             { // v2
-                    positions[mesh.indices[i * 3 + 2]].x * scale,
-                    positions[mesh.indices[i * 3 + 2]].y * scale,
-                    positions[mesh.indices[i * 3 + 2]].z * scale
+                    positions[mesh.indices[i * 3 + 2]].x,
+                    positions[mesh.indices[i * 3 + 2]].y,
+                    positions[mesh.indices[i * 3 + 2]].z
             },
-            {
-                    {0, 0, 0},
-                    {1, 0, 0},
+            { // material
+                    {0, 0, 0}, // emmision
+                    {1, 0, 0}, // difuse
                     0,
                     0,
-                    1 }
+                    1
+            }
         };
+
+        TransformedShape shape = TransformedShape(tr);
+        shape.position = position;
+        shape.rotation = rotation;
+        shape.scale = scale;
+        triangles.push_back(move(shape));
+
+//        triangles.push_back(TransformedShape(Triangle{
+//                glm::vec3( matrix * glm::vec4(tr.v0, 1.0f) ),
+//                glm::vec3( matrix * glm::vec4(tr.v1, 1.0f) ),
+//                glm::vec3( matrix * glm::vec4(tr.v2, 1.0f) ),
+//                tr.material
+//        }));
     }
 
     return triangles;
@@ -281,7 +353,7 @@ inline dvec3 RandomDome(const dvec3 &normal) {
 struct World {
     Camera camera;
     vector<Sphere> spheres;
-    vector<Triangle> triangles;
+    vector<TransformedShape> triangles;
     mutable std::atomic<unsigned long> samplesCounter = {0};
     mutable std::atomic<unsigned long> raysCounter = {0};
     mutable std::atomic<unsigned long> totalCounter = {0};
@@ -371,7 +443,7 @@ struct World {
         std::mutex mtx;
 
         // For each pixel generate rays
-#pragma omp parallel for
+        #pragma omp parallel for
         for (int y = 0; y < image.height; ++y) {
             for (int x = 0; x < image.width; ++x) {
                 dvec3 color;
@@ -411,13 +483,11 @@ int main() {
     // Image to render to
     Image image{512, 512};
 
-
-
     // World to render
     const World world{
             { // Camera
                     {0, 0, 25}, // Position
-                    {0, 0, 1}, // Back
+                    {0, 0,  1}, // Back
                     {0, .5, 0}, // Up
                     {.5, 0, 0}, // Right
             },
@@ -433,14 +503,19 @@ int main() {
 //                    {10, {10, 10, -10}, {{0, 0, 0}, {0, 0, 1}, 0, 0, 1.54}},           // Sphere in top right corner
             },
 //            {
-//                    { {0,0,0}, {10,0,0}, {0,10,0}, {{1, 0, 0}, {1, 1, 1}, 1, 0, 0}}
+//                {
+//                    {-8.656, 14.249, 0.843},
+//                    {-8.969, 13.971, 1.377},
+//                    {-8.949, 14.392, 1.248},
+//                    {{1, 0, 0}, {1, 0, 0}, 1, 0, 0}
+//                }
 //            }
             loadObjFile("..\\data\\bunny.obj")
     };
 
 
     // Render the scene
-    world.render(image, 4, 5);
+    world.render(image, 32, 5);
 
     // Save the result
     image::saveBMP(image, "raw3_raytrace.bmp");
