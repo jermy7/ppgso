@@ -31,7 +31,7 @@ private:
   Shader program = {texture_vert_glsl, texture_frag_glsl};
 
   // Load a quad mesh
-  Mesh quad = {"quad.obj"};
+  Mesh quad = {"..\\data\\quad.obj"};
 
   // Our Path Tracer
   Renderer renderer;
@@ -66,7 +66,7 @@ public:
     auto transformedBox = TransformedShape(yellowBox);
     transformedBox.position = {0,-10,0};
     transformedBox.rotation = {0,0,M_PI/3.0};
-    transformedBox.scale = {2,5,2};
+    transformedBox.scale = {5,5,5};
     renderer.add(std::move(transformedBox));
 
      // Spheres

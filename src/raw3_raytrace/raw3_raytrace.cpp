@@ -12,6 +12,7 @@
 
 #include <glm/gtx/euler_angles.hpp>
 #include <glm/gtx/transform.hpp>
+#include <tiny_obj_loader.h>
 
 using namespace std;
 using namespace glm;
@@ -162,7 +163,7 @@ struct Triangle : Shape {
         this->material = material;
     }
 
-    inline Hit hit(const Ray &ray) const {
+    inline Hit hit(const Ray &ray) const override {
 
         // compute plane's normal
         dvec3 v0v1 = v1 - v0;
@@ -182,7 +183,7 @@ struct Triangle : Shape {
         float d = dot(N, v0);
 
         // compute t (equation 3)
-        auto t = (-1 * (dot(N, ray.origin) + d)) / NdotRayDirection;
+        float t = (-1 * (dot(N, ray.origin) + d)) / NdotRayDirection;
         // check if the triangle is in behind the ray
         if (t < 0)
             return noHit; // the triangle is behind
@@ -221,11 +222,36 @@ struct Triangle : Shape {
     }
 };
 
-struct Mesh {
+struct MyMesh : Shape {
     vector<Triangle> triangles;
+    vec3 rotation = {0, -5, 5};
+    vec3 scale = {40, 40, 40};
+    vec3 position = {0, 0, 0};
 
-    inline Hit hit(const Ray &ray) const {
-        return noHit;
+    inline Hit hit(const Ray &ray) const override {
+        // Compute model matrix and inverse
+        glm::mat4 matrix = glm::translate(glm::mat4(1.0f), position)
+                           * glm::orientate4(rotation)
+                           * glm::scale(glm::mat4(1.0f), scale);
+        glm::mat4 inverse = glm::inverse(matrix);
+
+        // Transform ray to object space
+        Ray transformedRay = { glm::vec3(inverse * glm::vec4{ray.origin, 1.0f}), glm::vec3(inverse * glm::vec4{ray.direction, 0.0f}) };
+
+        auto hit = noHit;
+        for (auto &triangle : triangles)
+        {
+            auto lh = triangle.hit(transformedRay);
+            if (lh.distance < hit.distance) {
+                hit = lh;
+            }
+        }
+
+        // Transform to world space
+        hit.point = glm::vec3(matrix * glm::vec4{hit.point, 1.0f});
+        hit.normal = glm::normalize(glm::vec3(matrix * glm::vec4{hit.normal, 0.0f}));
+
+        return hit;
     }
 };
 
@@ -233,7 +259,7 @@ struct Mesh {
  * Load Wavefront obj file data as vector of faces for simplicity
  * @return vector of Faces that can be rendered
  */
-vector<TransformedShape> loadObjFile(const string filename) {
+MyMesh loadObjFile(const string filename) {
     // Using tiny obj loader from ppgso lib
     vector<tinyobj::shape_t> shapes;
     vector<tinyobj::material_t> materials;
@@ -243,61 +269,26 @@ vector<TransformedShape> loadObjFile(const string filename) {
     auto &mesh = shapes[0].mesh;
 
     // Collect data in vectors
-    vector<vec4> positions;
+    vector<vec3> positions;
     for (int i = 0; i < (int) mesh.positions.size() / 3; ++i)
-        positions.emplace_back(mesh.positions[3 * i], mesh.positions[3 * i + 1], mesh.positions[3 * i + 2], 1);
-
-    vec3 rotation = {0, 0, 0};
-    vec3 scale = {40, 40, 1};
-    vec3 position = {0, -10, 0};
-
-    glm::mat4 matrix = glm::translate(glm::mat4(1.0f), position)
-                       * glm::orientate4(rotation)
-                       * glm::scale(glm::mat4(1.0f), scale);
-    glm::mat4 inverse = glm::inverse(matrix);
+        positions.emplace_back(mesh.positions[3 * i], mesh.positions[3 * i + 1], mesh.positions[3 * i + 2]);
 
     // Fill the vector of Faces with data
-    vector<TransformedShape> triangles;
-    for (int i = 0; i < (int)mesh.positions.size() / 3; i++) {
-        Triangle tr {
-            { // v0
-                    positions[mesh.indices[i * 3]].x,
-                    positions[mesh.indices[i * 3]].y,
-                    positions[mesh.indices[i * 3]].z,
-            },
-            { // v1
-                    positions[mesh.indices[i * 3 + 1]].x,
-                    positions[mesh.indices[i * 3 + 1]].y,
-                    positions[mesh.indices[i * 3 + 1]].z
-            },
-            { // v2
-                    positions[mesh.indices[i * 3 + 2]].x,
-                    positions[mesh.indices[i * 3 + 2]].y,
-                    positions[mesh.indices[i * 3 + 2]].z
-            },
-            { // material
-                    {0, 0, 0}, // emmision
-                    {1, 0, 0}, // difuse
-                    0,
-                    0,
-                    1
-            }
-        };
-
-        TransformedShape shape = TransformedShape(tr);
-        shape.position = position;
-        shape.rotation = rotation;
-        shape.scale = scale;
-        triangles.push_back(move(shape));
-
-//        triangles.push_back(TransformedShape(Triangle{
-//                glm::vec3( matrix * glm::vec4(tr.v0, 1.0f) ),
-//                glm::vec3( matrix * glm::vec4(tr.v1, 1.0f) ),
-//                glm::vec3( matrix * glm::vec4(tr.v2, 1.0f) ),
-//                tr.material
-//        }));
+    MyMesh triangles;
+    for (int i = 0; i < (int)(mesh.indices.size() / 3); i++) {
+        triangles.triangles.push_back({
+                                              positions[mesh.indices[i * 3]],
+                                              positions[mesh.indices[i * 3 + 1]],
+                                              positions[mesh.indices[i * 3 + 2]],
+                                              {                                           // material
+                                                      {1, 0, 0},                              // emmision
+                                                      {1, 0, 0},                              // difuse
+                                                      0,
+                                                      0,
+                                                      1
+                                              }
+                                      });
     }
-
     return triangles;
 }
 
@@ -353,7 +344,7 @@ inline dvec3 RandomDome(const dvec3 &normal) {
 struct World {
     Camera camera;
     vector<Sphere> spheres;
-    vector<TransformedShape> triangles;
+    vector<MyMesh> meshes;
     mutable std::atomic<unsigned long> samplesCounter = {0};
     mutable std::atomic<unsigned long> raysCounter = {0};
     mutable std::atomic<unsigned long> totalCounter = {0};
@@ -372,8 +363,8 @@ struct World {
                 hit = lh;
             }
         }
-        for (auto &triangle : triangles) {
-            auto lh = triangle.hit(ray);
+        for (auto &mesh : meshes) {
+            auto lh = mesh.hit(ray);
             if (lh.distance < hit.distance) {
                 hit = lh;
             }
@@ -486,36 +477,50 @@ int main() {
     // World to render
     const World world{
             { // Camera
-                    {0, 0, 25}, // Position
-                    {0, 0,  1}, // Back
-                    {0, .5, 0}, // Up
-                    {.5, 0, 0}, // Right
+                    {  0,  0, 25}, // Position
+                    {  0,  0,  1}, // Back
+                    {  0, .5,  0}, // Up
+                    { .5,  0,  0}, // Right
             },
             { // Spheres
-                    {10000, {0, -10010, 0},  {{0, 0, 0}, {1, 1, 1}, 0, 0, 0}},           // Floor
-                    {10000, {-10010, 0, 0},  {{0, 0, 0}, {1, 1, 1}, 0, 0, 0}},           // Left wall
-                    {10000, {10010,  0, 0},  {{0, 0, 0}, {1, 1, 1}, 0, 0, 0}},           // Right wall
-                    {10000, {0, 0, -10010},  {{0, 0, 0}, {1, 1, 1}, 0, 0, 0}},           // Back wall
-                    {10000, {0, 0,  10030},  {{0, 0, 0}, {1, 1, 1}, 0, 0, 0}},           // Front wall (behind camera)
-                    {10000, {0,  10010, 0},  {{1, 1, 1}, {1, 1, 1}, 0, 0, 0}},           // Ceiling and source of light
+//                    {10000, {0, -10010, 0},  {{0, 0, 0}, {1, 1, 1}, 0, 0, 0}},           // Floor
+//                    {10000, {-10010, 0, 0},  {{0, 0, 0}, {1, 1, 1}, 0, 0, 0}},           // Left wall
+//                    {10000, {10010,  0, 0},  {{0, 0, 0}, {1, 1, 1}, 0, 0, 0}},           // Right wall
+//                    {10000, {0, 0, -10010},  {{0, 0, 0}, {1, 1, 1}, 0, 0, 0}},           // Back wall
+//                    {10000, {0, 0,  10030},  {{0, 0, 0}, {1, 1, 0}, 0, 0, 0}},           // Front wall (behind camera)
+//                    {10000, {0,  10010, 0},  {{1, 1, 1}, {1, 1, 1}, 0, 0, 0}},           // Ceiling and source of light
 //                    {2, {-5, -8, 3}, {{0, 0, 0}, {.7, .7, 0}, 1, .95, 1.52}},          // Refractive glass sphere
 //                    {4, {0, -6, 0}, {{0, 0, 0}, {.7, .5, .1}, 1, 0, 0}},               // Reflective sphere
 //                    {10, {10, 10, -10}, {{0, 0, 0}, {0, 0, 1}, 0, 0, 1.54}},           // Sphere in top right corner
             },
 //            {
-//                {
-//                    {-8.656, 14.249, 0.843},
-//                    {-8.969, 13.971, 1.377},
-//                    {-8.949, 14.392, 1.248},
+//                TransformedShape(Triangle{
+//                    {0, 0, 0},
+//                    {0, 5, 0},
+//                    {5, 0, 0},
+//                    {{0, 1, 0}, {1, 0, 0}, 1, 0, 0}
+//                }),
+//                TransformedShape(Triangle{
+//                    {0, 0, 0},
+//                    {0, 2.5, 2.5},
+//                    {5, 0, 0},
 //                    {{1, 0, 0}, {1, 0, 0}, 1, 0, 0}
-//                }
+//                })
 //            }
-            loadObjFile("..\\data\\bunny.obj")
+            {
+                loadObjFile("..\\data\\bunny.obj")
+            }
     };
 
 
+//    TransformedShape shape(bunny);
+//    shape.position = position;
+//    shape.rotation = rotation;
+//    shape.scale = scale;
+//    world.meshes.push_back((shape));
+
     // Render the scene
-    world.render(image, 32, 5);
+    world.render(image, 4, 4);
 
     // Save the result
     image::saveBMP(image, "raw3_raytrace.bmp");
