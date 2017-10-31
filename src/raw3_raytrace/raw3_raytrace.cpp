@@ -14,7 +14,7 @@ using namespace std;
 using namespace glm;
 using namespace ppgso;
 
-bool useKD = true;
+const bool useKD = true;
 
 // Global constants
 constexpr double INF = numeric_limits<float>::max();       // Will be used for infinity
@@ -156,18 +156,19 @@ struct Triangle : Shape {
 };
 
 struct Box {
-    dvec3 normal, x1, x2;
+    dvec3  x1, x2;
+    Material material;
 
-    Box(int axis) {
-        if (axis == 0)
-            normal = { 0, 0, 1 };
-        else if (axis == 1)
-            normal = { 1, 0, 0 };
-        else
-            normal = { 0, 1, 0};
-
+    Box() {
         x1 = { 0, 0, 0 };
         x2 = { 0, 0, 0 };
+        material = {                                      // material
+            {1.0, 0.0, 0.0},                              // emmision
+            {0.8, 0.2, 0.0},                              // difuse
+            0.0,
+            0.0,
+            0.0
+        };
     }
 
     void expand(const Triangle &triangle) {
@@ -194,21 +195,47 @@ struct Box {
             x2.z = maxz;
     }
 
-    bool intersect(const Ray &ray)
+    inline Hit intersect(const Ray &ray) const
     {
-        float denom = dot(normal, ray.direction);
-        if (abs(denom) > 0.0001f) // your favorite epsilon
-        {
-            float t = dot(x1 - ray.origin, normal) / denom;
-            if (t >= 0)
-                return true; // you might want to allow an epsilon here too
+        try {
+            dvec3 n1 = (x1 - ray.origin) / ray.direction;
+            dvec3 f1 = (x2 - ray.origin) / ray.direction;
+            auto n = glm::min(n1, f1);
+            auto f = glm::max(n1, f1);
+            double t0 = std::max(std::max(n.x, n.y), n.z);
+            double t1 = std::min(std::min(f.x, f.y), f.z);
+
+            dvec3 point = ray.point(t0);
+            dvec3 normal;
+            if (point.x < x1.x + EPS)
+                normal = {-1, 0, 0};
+            else if (point.x > x2.x - EPS)
+                normal = {1, 0, 0};
+            else if (point.y < x1.y + EPS)
+                normal = {0, -1, 0};
+            else if (point.y > x2.y - EPS)
+                normal = {0, 1, 0};
+            else if (point.z < x1.z + EPS)
+                normal = {0, 0, -1};
+            else if (point.z > x2.z - EPS)
+                normal = {0, 0, 1};
+            else
+                normal = {0, 1, 0};
+
+            if (t0 > 0.0 && t0 < t1) {
+                return Hit{t0, point, normal, material};
+            }
         }
-        return false;
+        catch (exception ex) {
+
+        }
+
+        return noHit;
     }
 };
 
 struct MyMesh : Shape {
-    Box bbox = Box(0);
+    Box bbox = Box();
     vector<Triangle> triangles = vector<Triangle>();
     std::shared_ptr<MyMesh> leftNode = nullptr;
     std::shared_ptr<MyMesh> rightNode = nullptr;
@@ -217,6 +244,7 @@ struct MyMesh : Shape {
 
     inline Hit hit(const Ray &ray) const override {
         auto hit = noHit;
+        Hit h;
         if (!useKD) {
             for (auto& triangle : triangles) {
                 auto lh = triangle.hit(ray);
@@ -225,17 +253,24 @@ struct MyMesh : Shape {
                 }
             }
         } else {
-            if (leftNode != nullptr && leftNode->bbox.intersect(ray)) {
-                hit = leftNode->hit(ray);
-            } else if (rightNode != nullptr && rightNode->bbox.intersect(ray)) {
-                hit = rightNode->hit(ray);
-            } else if (!triangles.empty())
-                for (auto& triangle : triangles) {
-                    auto lh = triangle.hit(ray);
-                    if (lh.distance < hit.distance) {
-                        hit = lh;
-                    }
+            if (leftNode != nullptr) {
+                h = leftNode->bbox.intersect(ray);
+                if (h.distance < hit.distance)
+                    hit = leftNode->hit(ray);
             }
+
+            if (rightNode != nullptr) {
+                h = rightNode->hit(ray);
+                if (h.distance < hit.distance)
+                    hit = rightNode->hit(ray);
+            }
+
+            if (!triangles.empty())
+                for (auto& triangle : triangles) {
+                    h = triangle.hit(ray);
+                    if (h.distance < hit.distance)
+                        hit = h;
+                }
         }
 
         return hit;
@@ -244,11 +279,11 @@ struct MyMesh : Shape {
     inline void build(vector<Triangle> &triangles, int depth) {
 
         axis = depth % 3;
-        bbox = Box(axis);
+        bbox = Box();
         for (auto& triangle : triangles)
             bbox.expand(triangle);
 
-        if (triangles.size() <= 20) {
+        if (triangles.size() <= 8) {
 
             for (auto &t : triangles)
                 this->triangles.emplace_back(t);
@@ -280,7 +315,7 @@ struct MyMesh : Shape {
         rightNode->build(right, depth + 1);
     }
 
-    inline double getMidPoint(vector<Triangle> &triangles) {
+    inline double getMidPoint(vector<Triangle> triangles) {
         double res = 0;
         vector<float> values;
         if (axis == 0) { // x
@@ -338,7 +373,7 @@ MyMesh loadObjFile(const string filename) {
                 positions[mesh.indices[i * 3 + 1]],
                 positions[mesh.indices[i * 3 + 2]],
                 {                                           // material
-                  {1.0, 0.0, 0.0},                              // emmision
+                  {0.0, 0.0, 0.0},                              // emmision
                   {0.8, 0.2, 0.0},                              // difuse
                   0.0,
                   0.0,
@@ -567,7 +602,7 @@ int main() {
     };
 
     // Render the scene
-    world.render(image, 128, 5);
+    world.render(image, 64, 4);
 
     // Save the result
     image::saveBMP(image, "raw3_raytrace.bmp");
