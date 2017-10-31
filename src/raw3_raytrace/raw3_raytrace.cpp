@@ -8,20 +8,18 @@
 #include <mutex>
 #include <iomanip>
 #include <atomic>
-#include <memory>
-
-#include <glm/gtx/euler_angles.hpp>
-#include <glm/gtx/transform.hpp>
-#include <tiny_obj_loader.h>
+#include <algorithm>
 
 using namespace std;
 using namespace glm;
 using namespace ppgso;
 
+bool useKD = true;
+
 // Global constants
-constexpr double INF = numeric_limits<double>::max();       // Will be used for infinity
-constexpr double EPS = numeric_limits<double>::epsilon();   // Numerical epsilon
-const double DELTA = sqrt(EPS);
+constexpr double INF = numeric_limits<float>::max();       // Will be used for infinity
+constexpr double EPS = numeric_limits<float>::epsilon();   // Numerical epsilon
+const double DELTA = (double)sqrt(EPS);
 
 /*!
  * Structure holding origin and direction that represents a ray
@@ -60,45 +58,12 @@ struct Hit {
 /*!
  * Constant for collisions that have not hit any object in the scene
  */
-const Hit noHit{INF, {0, 0, 0}, {0, 0, 0}, {{0, 0, 0}, {0, 0, 0}, 0, 0, 0}};                           // Delta to use
+const Hit noHit{INF, {0, 0, 0}, {0, 0, 0}, {{0, 0, 0}, {0, 0, 0}, .0, .0, .0}};                           // Delta to use
 
 // Shape interface
 struct Shape {
     virtual ~Shape() = default;
     virtual Hit hit(const Ray& ray) const = 0;
-};
-
-// Shape with model matrix that can transform any other shape
-struct TransformedShape final : public Shape {
-    std::unique_ptr<Shape> shape;
-    vec3 rotation = {0, 0, 0};
-    vec3 scale = {1, 1, 1};
-    vec3 position = {0, 0, 0};
-
-    template<typename T>
-    TransformedShape(T s) : shape{std::make_unique<T>(std::move(s))} {}
-
-    virtual Hit hit(const Ray& ray) const override {
-        // Compute model matrix and inverse
-        glm::mat4 matrix = glm::translate(glm::mat4(1.0f), position)
-                           * glm::orientate4(rotation)
-                           * glm::scale(glm::mat4(1.0f), scale);
-        glm::mat4 inverse = glm::inverse(matrix);
-
-        // Transform ray to object space
-        Ray transformedRay = { glm::vec3(inverse * glm::vec4{ray.origin, 1.0f}), glm::vec3(inverse * glm::vec4{ray.direction, 0.0f}) };
-
-        // Hit in object space
-        auto hit = shape->hit(transformedRay);
-
-        // Transform to world space
-        hit.point = glm::vec3(matrix * glm::vec4{hit.point, 1.0f});
-        hit.normal = glm::normalize(glm::vec3(matrix * glm::vec4{hit.normal, 0.0f}));
-
-        return hit;
-//        return shape->hit(ray);
-    }
-
 };
 
 /*!
@@ -156,102 +121,188 @@ struct Triangle : Shape {
     dvec3 v0, v1, v2;
     Material material;
 
-    Triangle(dvec3 v0, dvec3 v1, dvec3 v2, Material material) {
+    Triangle(vec3 v0, dvec3 v1, dvec3 v2, Material material) {
         this->v0 = v0;
         this->v1 = v1;
         this->v2 = v2;
         this->material = material;
     }
 
-    inline Hit hit(const Ray &ray) const override {
+    inline Hit hit(const Ray &ray) const {
+        double t, u, v;
 
-        // compute plane's normal
         dvec3 v0v1 = v1 - v0;
         dvec3 v0v2 = v2 - v0;
-        // no need to normalize
-        dvec3 N = cross(v0v1,v0v2); // N
-        float area2 = N.length();
+        dvec3 pvec = cross(ray.direction, v0v2);
+        double det = dot(v0v1, pvec);
 
-        // Step 1: finding P
+        if (fabs(det) < EPS) return noHit;
 
-        // check if ray and plane are parallel ?
-        float NdotRayDirection = dot(N, ray.direction);
-        if (fabs(NdotRayDirection) < EPS) // almost 0
-            return noHit; // they are parallel so they don't intersect !
+        double invDet = 1 / det;
 
-        // compute d parameter using equation 2
-        float d = dot(N, v0);
+        dvec3 tvec = ray.origin - v0;
 
-        // compute t (equation 3)
-        float t = (-1 * (dot(N, ray.origin) + d)) / NdotRayDirection;
-        // check if the triangle is in behind the ray
-        if (t < 0)
-            return noHit; // the triangle is behind
+        u = dot(tvec, pvec) * invDet;
+        if (u < 0 || u > 1) return noHit;
 
-        // compute the intersection point using equation 1
-        dvec3 P = ray.point(t);
+        dvec3 qvec = cross(tvec, v0v1);
+        v = dot(ray.direction, qvec) * invDet;
+        if (v < 0 || u + v > 1) return noHit;
 
-        // Step 2: inside-outside test
-        dvec3 C; // vector perpendicular to triangle's plane
+        t = -1 * dot(v0v2, qvec) * invDet;
 
-        // edge 0
-        dvec3 edge0 = v1 - v0;
-        dvec3 vp0 = P - v0;
-        C = cross(edge0,vp0);
-        if (dot(N, C) < 0)
-            return noHit; // P is on the right side
+        return {t, ray.point(t), normalize(cross(v0v1, v0v2)), material};
+    }
+};
 
-        // edge 1
-        dvec3 edge1 = v2 - v1;
-        dvec3 vp1 = P - v1;
-        C = cross(edge1,vp1);
-        if (dot(N, C) < 0)
-            return noHit; // P is on the right side
+struct Box {
+    dvec3 normal, x1, x2;
 
-        // edge 2
-        dvec3 edge2 = v0 - v2;
-        dvec3 vp2 = P - v2;
-        C = cross(edge2,vp2);
-        if (dot(N, C) < 0)
-            return noHit; // P is on the right side;
+    Box(int axis) {
+        if (axis == 0)
+            normal = { 0, 0, 1 };
+        else if (axis == 1)
+            normal = { 1, 0, 0 };
+        else
+            normal = { 0, 1, 0};
 
-        N = normalize(N);
+        x1 = { 0, 0, 0 };
+        x2 = { 0, 0, 0 };
+    }
 
-        Hit hit = { t, P, N, material }; // this ray hits the triangle
-        return hit;
+    void expand(const Triangle &triangle) {
+        double minx = std::min(std::min(triangle.v0.x, triangle.v1.x), triangle.v2.x);
+        double miny = std::min(std::min(triangle.v0.y, triangle.v1.y), triangle.v2.y);
+        double minz = std::min(std::min(triangle.v0.z, triangle.v1.z), triangle.v2.z);
+
+        double maxx = std::max(std::max(triangle.v0.x, triangle.v1.x), triangle.v2.x);
+        double maxy = std::max(std::max(triangle.v0.y, triangle.v1.y), triangle.v2.y);
+        double maxz = std::max(std::max(triangle.v0.z, triangle.v1.z), triangle.v2.z);
+
+        if (x1.x > minx)
+            x1.x = minx;
+        if (x1.y > miny)
+            x1.y = miny;
+        if (x1.z > minz)
+            x1.z = minz;
+
+        if (x2.x < maxx)
+            x2.x = maxx;
+        if (x2.y < maxy)
+            x2.y = maxy;
+        if (x2.z < maxz)
+            x2.z = maxz;
+    }
+
+    bool intersect(const Ray &ray)
+    {
+        float denom = dot(normal, ray.direction);
+        if (abs(denom) > 0.0001f) // your favorite epsilon
+        {
+            float t = dot(x1 - ray.origin, normal) / denom;
+            if (t >= 0)
+                return true; // you might want to allow an epsilon here too
+        }
+        return false;
     }
 };
 
 struct MyMesh : Shape {
-    vector<Triangle> triangles;
-    vec3 rotation = {0, -5, 5};
-    vec3 scale = {40, 40, 40};
-    vec3 position = {0, 0, 0};
+    Box bbox = Box(0);
+    vector<Triangle> triangles = vector<Triangle>();
+    std::shared_ptr<MyMesh> leftNode = nullptr;
+    std::shared_ptr<MyMesh> rightNode = nullptr;
+    double midPoint = 0.0f;
+    int axis = -1;
 
     inline Hit hit(const Ray &ray) const override {
-        // Compute model matrix and inverse
-        glm::mat4 matrix = glm::translate(glm::mat4(1.0f), position)
-                           * glm::orientate4(rotation)
-                           * glm::scale(glm::mat4(1.0f), scale);
-        glm::mat4 inverse = glm::inverse(matrix);
-
-        // Transform ray to object space
-        Ray transformedRay = { glm::vec3(inverse * glm::vec4{ray.origin, 1.0f}), glm::vec3(inverse * glm::vec4{ray.direction, 0.0f}) };
-
         auto hit = noHit;
-        for (auto &triangle : triangles)
-        {
-            auto lh = triangle.hit(transformedRay);
-            if (lh.distance < hit.distance) {
-                hit = lh;
+        if (!useKD) {
+            for (auto& triangle : triangles) {
+                auto lh = triangle.hit(ray);
+                if (lh.distance < hit.distance) {
+                    hit = lh;
+                }
+            }
+        } else {
+            if (leftNode != nullptr && leftNode->bbox.intersect(ray)) {
+                hit = leftNode->hit(ray);
+            } else if (rightNode != nullptr && rightNode->bbox.intersect(ray)) {
+                hit = rightNode->hit(ray);
+            } else if (!triangles.empty())
+                for (auto& triangle : triangles) {
+                    auto lh = triangle.hit(ray);
+                    if (lh.distance < hit.distance) {
+                        hit = lh;
+                    }
             }
         }
 
-        // Transform to world space
-        hit.point = glm::vec3(matrix * glm::vec4{hit.point, 1.0f});
-        hit.normal = glm::normalize(glm::vec3(matrix * glm::vec4{hit.normal, 0.0f}));
-
         return hit;
+    }
+
+    inline void build(vector<Triangle> &triangles, int depth) {
+
+        axis = depth % 3;
+        bbox = Box(axis);
+        for (auto& triangle : triangles)
+            bbox.expand(triangle);
+
+        if (triangles.size() <= 20) {
+
+            for (auto &t : triangles)
+                this->triangles.emplace_back(t);
+
+            return;
+        }
+
+        midPoint = getMidPoint(triangles);
+        vector<Triangle> left;
+        vector<Triangle> right;
+        for (auto& triangle : triangles) {
+            if (axis == 0)
+                std::max(std::max(triangle.v0.x, triangle.v1.x), triangle.v2.x) < midPoint ?
+                left.emplace_back(triangle) : right.emplace_back(triangle);
+            else if (axis == 1)
+                std::max(std::max(triangle.v0.y, triangle.v1.y), triangle.v2.y) < midPoint ?
+                left.emplace_back(triangle) : right.emplace_back(triangle);
+            else
+                std::max(std::max(triangle.v0.z, triangle.v1.z), triangle.v2.z) < midPoint ?
+                left.emplace_back(triangle) : right.emplace_back(triangle);
+        }
+
+//        leftNode = new MyMesh();
+//        rightNode = new MyMesh();
+        leftNode = std::make_shared<MyMesh>();
+        rightNode = std::make_shared<MyMesh>();
+
+        leftNode->build(left, depth + 1);
+        rightNode->build(right, depth + 1);
+    }
+
+    inline double getMidPoint(vector<Triangle> &triangles) {
+        double res = 0;
+        vector<float> values;
+        if (axis == 0) { // x
+            for (auto& triangle : triangles)
+                values.emplace_back(std::max(std::max(triangle.v0.x,triangle.v1.x),triangle.v2.x));
+        } else if (axis == 1) { // y
+            for (auto& triangle : triangles)
+                values.emplace_back(std::max(std::max(triangle.v0.y,triangle.v1.y),triangle.v2.y));
+        } else { // z
+            for (auto& triangle : triangles)
+                values.emplace_back(std::max(std::max(triangle.v0.z,triangle.v1.z),triangle.v2.z));
+        }
+
+        sort(values.begin(), values.end());
+
+        auto size = values.size();
+        if (size  % 2 == 0)
+            res = (values[size / 2 - 1] + values[size / 2]) / 2;
+        else
+            res = values[size / 2];
+
+        return res;
     }
 };
 
@@ -268,28 +319,42 @@ MyMesh loadObjFile(const string filename) {
     // Will only convert 1st shape to Faces
     auto &mesh = shapes[0].mesh;
 
+
+
     // Collect data in vectors
     vector<vec3> positions;
     for (int i = 0; i < (int) mesh.positions.size() / 3; ++i)
-        positions.emplace_back(mesh.positions[3 * i], mesh.positions[3 * i + 1], mesh.positions[3 * i + 2]);
+        positions.emplace_back(
+                (mesh.positions[3 * i] * 50.0f + 1),
+                (mesh.positions[3 * i + 1] * 50.0f - 9),
+                (mesh.positions[3 * i + 2] * 50.0f)
+        );
 
     // Fill the vector of Faces with data
-    MyMesh triangles;
+    vector<Triangle> triangles;
     for (int i = 0; i < (int)(mesh.indices.size() / 3); i++) {
-        triangles.triangles.push_back({
-                                              positions[mesh.indices[i * 3]],
-                                              positions[mesh.indices[i * 3 + 1]],
-                                              positions[mesh.indices[i * 3 + 2]],
-                                              {                                           // material
-                                                      {1, 0, 0},                              // emmision
-                                                      {1, 0, 0},                              // difuse
-                                                      0,
-                                                      0,
-                                                      1
-                                              }
-                                      });
+        triangles.emplace_back(Triangle(
+                positions[mesh.indices[i * 3]],
+                positions[mesh.indices[i * 3 + 1]],
+                positions[mesh.indices[i * 3 + 2]],
+                {                                           // material
+                  {1.0, 0.0, 0.0},                              // emmision
+                  {0.8, 0.2, 0.0},                              // difuse
+                  0.0,
+                  0.0,
+                  0.0
+                }
+        ));
     }
-    return triangles;
+
+    MyMesh res = MyMesh();
+
+    if (useKD)
+        res.build(triangles, 0);
+    else
+        res.triangles = triangles;
+
+    return res;
 }
 
 /*!
@@ -453,10 +518,10 @@ struct World {
             totalCounter += image.width;
 
             auto prog = clock();
-            double t = double(prog - start) / CLOCKS_PER_SEC;
-            double perc = round(double(totalCounter) / imageTotal * 10000) / 100;
-            double sampCnt = double(samplesCounter) / t;
-            double raysCnt = double(raysCounter) / t;
+            double t = float(prog - start) / CLOCKS_PER_SEC;
+            double perc = round(float(totalCounter) / imageTotal * 10000) / 100;
+            double sampCnt = float(samplesCounter) / t;
+            double raysCnt = float(raysCounter) / t;
 
             {
                 std::lock_guard<std::mutex> lock(mtx);
@@ -465,6 +530,9 @@ struct World {
                      << setw(14) << raysCnt << " rays/sec.\r";
             }
         }
+
+        clock_t end = clock();
+        cout << endl << "Execution takes: " << double(end - start) / CLOCKS_PER_SEC << " seconds" << endl;
     }
 };
 
@@ -483,44 +551,23 @@ int main() {
                     { .5,  0,  0}, // Right
             },
             { // Spheres
-//                    {10000, {0, -10010, 0},  {{0, 0, 0}, {1, 1, 1}, 0, 0, 0}},           // Floor
-//                    {10000, {-10010, 0, 0},  {{0, 0, 0}, {1, 1, 1}, 0, 0, 0}},           // Left wall
-//                    {10000, {10010,  0, 0},  {{0, 0, 0}, {1, 1, 1}, 0, 0, 0}},           // Right wall
-//                    {10000, {0, 0, -10010},  {{0, 0, 0}, {1, 1, 1}, 0, 0, 0}},           // Back wall
-//                    {10000, {0, 0,  10030},  {{0, 0, 0}, {1, 1, 0}, 0, 0, 0}},           // Front wall (behind camera)
-//                    {10000, {0,  10010, 0},  {{1, 1, 1}, {1, 1, 1}, 0, 0, 0}},           // Ceiling and source of light
+                    {10000, {0, -10010, 0},  {{0, 0, 0}, {1, 1, 1}, 0, 0, 0}},           // Floor
+                    {10000, {-10010, 0, 0},  {{0, 0, 0}, {1, 1, 1}, 0, 0, 0}},           // Left wall
+                    {10000, {10010,  0, 0},  {{0, 0, 0}, {1, 1, 1}, 0, 0, 0}},           // Right wall
+                    {10000, {0, 0, -10010},  {{0, 0, 0}, {1, 1, 1}, 0, 0, 0}},           // Back wall
+                    {10000, {0, 0,  10030},  {{0, 0, 0}, {1, 1, 0}, 0, 0, 0}},           // Front wall (behind camera)
+                    {10000, {0,  10010, 0},  {{1, 1, 1}, {1, 1, 1}, 0, 0, 0}},           // Ceiling and source of light
 //                    {2, {-5, -8, 3}, {{0, 0, 0}, {.7, .7, 0}, 1, .95, 1.52}},          // Refractive glass sphere
 //                    {4, {0, -6, 0}, {{0, 0, 0}, {.7, .5, .1}, 1, 0, 0}},               // Reflective sphere
 //                    {10, {10, 10, -10}, {{0, 0, 0}, {0, 0, 1}, 0, 0, 1.54}},           // Sphere in top right corner
             },
-//            {
-//                TransformedShape(Triangle{
-//                    {0, 0, 0},
-//                    {0, 5, 0},
-//                    {5, 0, 0},
-//                    {{0, 1, 0}, {1, 0, 0}, 1, 0, 0}
-//                }),
-//                TransformedShape(Triangle{
-//                    {0, 0, 0},
-//                    {0, 2.5, 2.5},
-//                    {5, 0, 0},
-//                    {{1, 0, 0}, {1, 0, 0}, 1, 0, 0}
-//                })
-//            }
             {
                 loadObjFile("..\\data\\bunny.obj")
             }
     };
 
-
-//    TransformedShape shape(bunny);
-//    shape.position = position;
-//    shape.rotation = rotation;
-//    shape.scale = scale;
-//    world.meshes.push_back((shape));
-
     // Render the scene
-    world.render(image, 4, 4);
+    world.render(image, 128, 5);
 
     // Save the result
     image::saveBMP(image, "raw3_raytrace.bmp");
