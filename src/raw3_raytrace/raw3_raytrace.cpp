@@ -10,6 +10,12 @@
 #include <atomic>
 #include <algorithm>
 
+#define STB_IMAGE_IMPLEMENTATION
+#include <stb_image.h>
+
+#include <glm/gtx/euler_angles.hpp>
+#include <glm/gtx/transform.hpp>
+
 using namespace std;
 using namespace glm;
 using namespace ppgso;
@@ -53,6 +59,93 @@ struct Hit {
     double distance;
     dvec3 point, normal;
     Material material;
+};
+
+class ImageFloat {
+public:
+
+    /*!
+	 * Create new empty image.
+	 *
+	 * @param width - Width in pixels.
+	 * @param height - Height in pixels.
+	 */
+    ImageFloat(const string fileName) {
+
+        int n;
+        auto img = stbi_loadf(fileName.c_str(), &width, &height, &n, 3);
+
+        if (img != NULL) {
+            framebuffer.resize((size_t) (width * height));
+            memcpy(framebuffer.data(), img, framebuffer.size() * sizeof(vec3));
+        }
+    }
+
+    /*!
+	 * Get raw access to the image data.
+	 *
+	 * @return - Pointer to the raw RGB framebuffer data.
+	 */
+    std::vector<vec3>& getFramebuffer() {
+        return framebuffer;
+    }
+
+    /*!
+	 * Get single pixel from the framebuffer.
+	 *
+	 * @param x - X position of the pixel in the framebuffer.
+	 * @param y - Y position of the pixel in the framebuffer.
+	 * @return - Reference to the pixel.
+	 */
+    vec3& getPixel(int x, int y) {
+        return framebuffer[x+y*width];
+    }
+
+    /*!
+	 * Set pixel on coordinates x and y
+	 * @param x Horizontal coordinate
+	 * @param y Vertical coordinate
+	 * @param color Pixel color to set
+	 */
+    void setPixel(int x, int y, const vec3& color) {
+        framebuffer[x+y*width] = color;
+    }
+
+    /*!
+	 * Set pixel on coordinates x and y
+	 * @param x Horizontal coordinate
+	 * @param y Vertical coordinate
+	 * @param r Red channel <0, 255>
+	 * @param g Green channel <0, 255>
+	 * @param b Blue channel <0, 255>
+	 */
+    void setPixel(int x, int y, int r, int g, int b) {
+        setPixel(x,y,{(uint8_t)r, (uint8_t)g, (uint8_t)b});
+    }
+
+    /*!
+	 * Set pixel on coordinates x and y
+	 * @param x Horizontal coordinate
+	 * @param y Vertical coordinate
+	 * @param r Red channel <0, 1>
+	 * @param g Green channel <0, 1>
+	 * @param b Blue channel <0, 1>
+	 */
+    void setPixel(int x, int y, float r, float g, float b) {
+        setPixel(x,y,{(uint8_t) (r * 255), (uint8_t) (g * 255), (uint8_t) (b * 255)});
+    }
+
+    /*!
+	 * Clear the image using single color
+	 * @param color Pixel color to set the image to
+	 */
+    void clear(const vec3& color = {0,0,0}) {
+        framebuffer = vector<vec3>(framebuffer.size(), color);
+    }
+
+    int width, height;
+private:
+    std::vector<vec3> framebuffer;
 };
 
 /*!
@@ -360,25 +453,25 @@ MyMesh loadObjFile(const string filename) {
     vector<vec3> positions;
     for (int i = 0; i < (int) mesh.positions.size() / 3; ++i)
         positions.emplace_back(
-                (mesh.positions[3 * i] * 50.0f + 1),
-                (mesh.positions[3 * i + 1] * 50.0f - 9),
-                (mesh.positions[3 * i + 2] * 50.0f)
+            (mesh.positions[3 * i] * 50.0f + 1),
+            (mesh.positions[3 * i + 1] * 50.0f - 9),
+            (mesh.positions[3 * i + 2] * 50.0f)
         );
 
     // Fill the vector of Faces with data
     vector<Triangle> triangles;
     for (int i = 0; i < (int)(mesh.indices.size() / 3); i++) {
         triangles.emplace_back(Triangle(
-                positions[mesh.indices[i * 3]],
-                positions[mesh.indices[i * 3 + 1]],
-                positions[mesh.indices[i * 3 + 2]],
-                {                                           // material
-                  {0.0, 0.0, 0.0},                              // emmision
-                  {0.8, 0.2, 0.0},                              // difuse
-                  0.0,
-                  0.0,
-                  0.0
-                }
+            positions[mesh.indices[i * 3]],
+            positions[mesh.indices[i * 3 + 1]],
+            positions[mesh.indices[i * 3 + 2]],
+            {                                           // material
+                {0.0, 0.0, 0.0},                              // emmision
+                {0.8, 0.2, 0.0},                              // difuse
+                0.0,
+                0.0,
+                0.0
+            }
         ));
     }
 
@@ -445,6 +538,7 @@ struct World {
     Camera camera;
     vector<Sphere> spheres;
     vector<MyMesh> meshes;
+    ImageFloat map;
     mutable std::atomic<unsigned long> samplesCounter = {0};
     mutable std::atomic<unsigned long> raysCounter = {0};
     mutable std::atomic<unsigned long> totalCounter = {0};
@@ -472,6 +566,13 @@ struct World {
         return hit;
     }
 
+    inline dvec3 getMapColor(const Ray &ray) const {
+        double x = (atan2(ray.direction.z, ray.direction.x) + PI) / (2 * PI);
+        double y = acos(ray.direction.y) / PI;
+        auto px = map.getPixel(x, y);
+        return dvec3(px.x, px.y, px.z);
+    }
+
     /*!
      * Trace a ray as it collides with objects in the world
      * @param ray Ray to trace
@@ -479,12 +580,12 @@ struct World {
      * @return Color representing the accumulated lighting for each ray collision
      */
     inline dvec3 trace(const Ray &ray, unsigned int depth) const {
-        if (depth == 0) return {0, 0, 0};
+        if (depth == 0) return getMapColor(ray);
 
         const Hit hit = cast(ray);
 
         // No hit
-        if (hit.distance == INF) return {0, 0, 0};
+        if (hit.distance == INF) return getMapColor(ray);
 
         // Emission
         dvec3 color = hit.material.emission;
@@ -534,7 +635,7 @@ struct World {
         std::mutex mtx;
 
         // For each pixel generate rays
-        #pragma omp parallel for
+#pragma omp parallel for
         for (int y = 0; y < image.height; ++y) {
             for (int x = 0; x < image.width; ++x) {
                 dvec3 color;
@@ -579,26 +680,34 @@ int main() {
 
     // World to render
     const World world{
-            { // Camera
-                    {  0,  0, 25}, // Position
-                    {  0,  0,  1}, // Back
-                    {  0, .5,  0}, // Up
-                    { .5,  0,  0}, // Right
-            },
-            { // Spheres
-                    {10000, {0, -10010, 0},  {{0, 0, 0}, {1, 1, 1}, 0, 0, 0}},           // Floor
-                    {10000, {-10010, 0, 0},  {{0, 0, 0}, {1, 1, 1}, 0, 0, 0}},           // Left wall
-                    {10000, {10010,  0, 0},  {{0, 0, 0}, {1, 1, 1}, 0, 0, 0}},           // Right wall
-                    {10000, {0, 0, -10010},  {{0, 0, 0}, {1, 1, 1}, 0, 0, 0}},           // Back wall
-                    {10000, {0, 0,  10030},  {{0, 0, 0}, {1, 1, 0}, 0, 0, 0}},           // Front wall (behind camera)
-                    {10000, {0,  10010, 0},  {{1, 1, 1}, {1, 1, 1}, 0, 0, 0}},           // Ceiling and source of light
+        { // Camera
+            {  0,  0, 25}, // Position
+            {  0,  0,  1}, // Back
+            {  0, .5,  0}, // Up
+            { .5,  0,  0}, // Right
+        },
+        { // Spheres
+//                    {10000, {0, -10010, 0},  {{0, 0, 0}, {1, 1, 1}, 0, 0, 0}},           // Floor
+//                    {10000, {-10010, 0, 0},  {{0, 0, 0}, {1, 1, 1}, 0, 0, 0}},           // Left wall
+//                    {10000, {10010,  0, 0},  {{0, 0, 0}, {1, 1, 1}, 0, 0, 0}},           // Right wall
+//                    {10000, {0, 0, -10010},  {{0, 0, 0}, {1, 1, 1}, 0, 0, 0}},           // Back wall
+//                    {10000, {0, 0,  10030},  {{0, 0, 0}, {1, 1, 1}, 0, 0, 0}},           // Front wall (behind camera)
+//                    {10000, {0,  10010, 0},  {{1, 1, 1}, {1, 1, 1}, 0, 0, 0}},           // Ceiling and source of light
 //                    {2, {-5, -8, 3}, {{0, 0, 0}, {.7, .7, 0}, 1, .95, 1.52}},          // Refractive glass sphere
-//                    {4, {0, -6, 0}, {{0, 0, 0}, {.7, .5, .1}, 1, 0, 0}},               // Reflective sphere
+                    {4, {0, -6, 0}, {{0, 0, 0}, {.7, .5, .1}, 1, 0, 0}},               // Reflective sphere
 //                    {10, {10, 10, -10}, {{0, 0, 0}, {0, 0, 1}, 0, 0, 1.54}},           // Sphere in top right corner
-            },
-            {
-                loadObjFile("..\\data\\bunny.obj")
-            }
+        },
+//            {
+//                {
+//                    {-8.656, 14.249, 0.843},
+//                    {-8.969, 13.971, 1.377},
+//                    {-8.949, 14.392, 1.248},
+//                    {{1, 0, 0}, {1, 0, 0}, 1, 0, 0}
+//                }
+//            }
+//        { loadObjFile("..\\data\\bunny.obj") },
+        {},
+        ImageFloat("..\\data\\mapa.jpg")
     };
 
     // Render the scene
