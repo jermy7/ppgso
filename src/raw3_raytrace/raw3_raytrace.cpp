@@ -77,7 +77,13 @@ public:
 
         if (img != NULL) {
             framebuffer.resize((size_t) (width * height));
-            memcpy(framebuffer.data(), img, framebuffer.size() * sizeof(vec3));
+	        for (int row = 0; row < height; row++) {
+		        for (int col = 0; col < width; col++) {
+			        framebuffer[col + row * width] = vec3(img[row * width * 3 + 3 * col],
+			                                              img[row * width * 3 + 3 * col + 1],
+			                                              img[row * width * 3 + 3 * col + 2]);
+		        }
+	        }
         }
     }
 
@@ -566,11 +572,12 @@ struct World {
         return hit;
     }
 
-    inline dvec3 getMapColor(const Ray &ray) const {
-        double x = (atan2(ray.direction.z, ray.direction.x) + PI) / (2 * PI);
-        double y = acos(ray.direction.y) / PI;
+    inline dvec3 getMapColor(const Ray &ray) {
+        double x = round((atan2(ray.direction.z, ray.direction.x) + PI) / (2 * PI) * map.width);
+        double y = round(acos(ray.direction.y) / PI * map.height);
         auto px = map.getPixel(x, y);
-        return dvec3(px.x, px.y, px.z);
+//	    cout << "[" << x << ", " << y << "] [" << px.x << ", " << px.y << ", " << px.z <<"]" << endl;
+        return dvec3(px.x * 255, px.y * 255, px.z * 255);
     }
 
     /*!
@@ -579,7 +586,7 @@ struct World {
      * @param depth Maximum number of collisions to trace
      * @return Color representing the accumulated lighting for each ray collision
      */
-    inline dvec3 trace(const Ray &ray, unsigned int depth) const {
+    inline dvec3 trace(const Ray &ray, unsigned int depth) {
         if (depth == 0) return getMapColor(ray);
 
         const Hit hit = cast(ray);
@@ -628,7 +635,7 @@ struct World {
      * Render the world to the provided image
      * @param image Image to render to
      */
-    void render(Image &image, unsigned int samples, unsigned int depth) const {
+    void render(Image &image, unsigned int samples, unsigned int depth) {
 
         int imageTotal = image.width * image.height;
         clock_t start = clock();
@@ -679,7 +686,7 @@ int main() {
     Image image{512, 512};
 
     // World to render
-    const World world{
+    World world{
         { // Camera
             {  0,  0, 25}, // Position
             {  0,  0,  1}, // Back
@@ -694,7 +701,7 @@ int main() {
 //                    {10000, {0, 0,  10030},  {{0, 0, 0}, {1, 1, 1}, 0, 0, 0}},           // Front wall (behind camera)
 //                    {10000, {0,  10010, 0},  {{1, 1, 1}, {1, 1, 1}, 0, 0, 0}},           // Ceiling and source of light
 //                    {2, {-5, -8, 3}, {{0, 0, 0}, {.7, .7, 0}, 1, .95, 1.52}},          // Refractive glass sphere
-                    {4, {0, -6, 0}, {{0, 0, 0}, {.7, .5, .1}, 1, 0, 0}},               // Reflective sphere
+                    {4, {0, -6, 0}, {{0, 0, 0}, {.7, .5, .1}, 1, 0, 0}}               // Reflective sphere
 //                    {10, {10, 10, -10}, {{0, 0, 0}, {0, 0, 1}, 0, 0, 1.54}},           // Sphere in top right corner
         },
 //            {
@@ -707,11 +714,11 @@ int main() {
 //            }
 //        { loadObjFile("..\\data\\bunny.obj") },
         {},
-        ImageFloat("..\\data\\mapa.jpg")
+        ImageFloat("..\\data\\mapa2.jpg")
     };
 
     // Render the scene
-    world.render(image, 64, 4);
+    world.render(image, 4, 4);
 
     // Save the result
     image::saveBMP(image, "raw3_raytrace.bmp");
