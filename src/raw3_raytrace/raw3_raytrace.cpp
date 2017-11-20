@@ -65,6 +65,16 @@ class ImageFloat {
 public:
 
     /*!
+     * Create new empty image.
+     *
+     * @param width - Width in pixels.
+     * @param height - Height in pixels.
+     */
+    ImageFloat(int width, int height) : width{width}, height{height} {
+        framebuffer.resize((size_t) (width * height));
+    }
+
+    /*!
 	 * Create new empty image.
 	 *
 	 * @param width - Width in pixels.
@@ -505,7 +515,7 @@ struct Camera {
      * @param height Height of the viewport
      * @return Ray for the giver viewport position with small random deviation applied to support multi-sampling
      */
-    Ray generateRay(int x, int y, int width, int height) const {
+    Ray generateRay(int x, int y, int width, int height, int fstop, int distance) const {
         // Camera deltas
         dvec3 vdu = 2.0 * right / (double) width;
         dvec3 vdv = 2.0 * -up / (double) height;
@@ -516,6 +526,15 @@ struct Camera {
                         + vdu * ((double) (-width / 2 + x) + linearRand(0.0, 1.0))
                         + vdv * ((double) (-height / 2 + y) + linearRand(0.0, 1.0));
         ray.direction = normalize(ray.direction);
+
+        dvec3 focusPoint = ray.point(distance);
+        ray.origin += dvec3 {
+                glm::linearRand(-1.0f, 1.0f) / (float)fstop,
+                glm::linearRand(-1.0f, 1.0f) / (float)fstop,
+                0
+        };
+        ray.direction = normalize(focusPoint - ray.origin);
+
         return ray;
     }
 };
@@ -573,11 +592,11 @@ struct World {
     }
 
     inline dvec3 getMapColor(const Ray &ray) {
-        double x = round((atan2(ray.direction.z, ray.direction.x) + PI) / (2 * PI) * map.width);
-        double y = round(acos(ray.direction.y) / PI * map.height);
+        double x = floor((atan2(ray.direction.z, ray.direction.x) + PI) / (2 * PI) * map.width);
+        double y = floor(acos(ray.direction.y) / PI * map.height);
         auto px = map.getPixel(x, y);
 //	    cout << "[" << x << ", " << y << "] [" << px.x << ", " << px.y << ", " << px.z <<"]" << endl;
-        return dvec3(px.x * 255, px.y * 255, px.z * 255);
+        return dvec3(px.x, px.y, px.z);
     }
 
     /*!
@@ -635,7 +654,7 @@ struct World {
      * Render the world to the provided image
      * @param image Image to render to
      */
-    void render(Image &image, unsigned int samples, unsigned int depth) {
+    void render(ImageFloat &image, unsigned int samples, unsigned int depth) {
 
         int imageTotal = image.width * image.height;
         clock_t start = clock();
@@ -649,7 +668,7 @@ struct World {
 
                 // Generate multiple samples
                 for (unsigned int i = 0; i < samples; ++i) {
-                    auto ray = camera.generateRay(x, y, image.width, image.height);
+                    auto ray = camera.generateRay(x, y, image.width, image.height, 2, 35);
                     color = color + trace(ray, depth);
                     samplesCounter++;
                 }
@@ -683,15 +702,15 @@ int main() {
     cout << "This will take a while ..." << endl;
 
     // Image to render to
-    Image image{512, 512};
+    ImageFloat image{512, 512};
 
     // World to render
     World world{
         { // Camera
-            {  0,  0, 25}, // Position
+            {  0,  0, 50}, // Position
             {  0,  0,  1}, // Back
             {  0, .5,  0}, // Up
-            { .5,  0,  0}, // Right
+            { .5,  0,  0} // Right
         },
         { // Spheres
 //                    {10000, {0, -10010, 0},  {{0, 0, 0}, {1, 1, 1}, 0, 0, 0}},           // Floor
@@ -701,7 +720,9 @@ int main() {
 //                    {10000, {0, 0,  10030},  {{0, 0, 0}, {1, 1, 1}, 0, 0, 0}},           // Front wall (behind camera)
 //                    {10000, {0,  10010, 0},  {{1, 1, 1}, {1, 1, 1}, 0, 0, 0}},           // Ceiling and source of light
 //                    {2, {-5, -8, 3}, {{0, 0, 0}, {.7, .7, 0}, 1, .95, 1.52}},          // Refractive glass sphere
-                    {4, {0, -6, 0}, {{0, 0, 0}, {.7, .5, .1}, 1, 0, 0}}               // Reflective sphere
+                    { 4, {10, 10, 15}, { {0, 0, 0}, {.7, .5, .1}, 1, 0, 0 } },
+                    { 4, {0, 0, 0}, { {0, 0, 0}, {.7, .5, .1}, 1, 0, 0 } },
+                    { 4, {-10, -10, -15}, { {0, 0, 0}, {.7, .5, .1}, 1, 0, 0 } }// Reflective sphere
 //                    {10, {10, 10, -10}, {{0, 0, 0}, {0, 0, 1}, 0, 0, 1.54}},           // Sphere in top right corner
         },
 //            {
@@ -718,10 +739,26 @@ int main() {
     };
 
     // Render the scene
-    world.render(image, 4, 4);
+    world.render(image, 256, 4);
+
+    Image img(image.width, image.height);
+
+    // gamma correction
+    float A = 1.0;
+    float y = 1.2;
+    for ( int row = 0; row < image.height; row++)
+        for (int col = 0; col < image.width; col++)
+        {
+            auto p = image.getPixel(col, row);
+            int r = std::min((int)round(powf(p.r, y) * A ), 255);
+            int g = std::min((int)round(powf(p.g, y) * A ), 255);
+            int b = std::min((int)round(powf(p.b, y) * A ), 255);
+            img.setPixel(col, row, r, g, b);
+        }
+
 
     // Save the result
-    image::saveBMP(image, "raw3_raytrace.bmp");
+    image::saveBMP(img, "raw3_raytrace.bmp");
 
     cout << "Done." << endl;
     return EXIT_SUCCESS;
