@@ -735,7 +735,7 @@ int main() {
 //            }
 //        { loadObjFile("..\\data\\bunny.obj") },
         {},
-        ImageFloat("..\\data\\mapa2.jpg")
+        ImageFloat("..\\data\\mapa1.jpg")
     };
 
     // Render the scene
