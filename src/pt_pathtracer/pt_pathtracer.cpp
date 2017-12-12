@@ -98,17 +98,27 @@ public:
   /*!
    * Construct a new Window and initialize shader uniform variables
    */
-  PathTracerWindow() : Window{"pt_pathtracer", SIZE, SIZE}, renderer{SIZE, SIZE, "../data/mapa2.jpg"}, framebuffer{SIZE, SIZE} {
+  PathTracerWindow() : Window{"pt_pathtracer", SIZE, SIZE}, renderer{SIZE, SIZE, "../scene/maps/map.hdr"}, framebuffer{SIZE, SIZE} {
     // Prepare the scene
     auto& scene = renderer.scene;
 
     renderer.camera.position = {0,0,15}; // 15
 
-      auto diffuse = Material("../data/orange.png", nullptr, nullptr);
+//      renderer.add(Sphere(100000, Position(0,-100015, 0), Material("../data/orange.png", nullptr, nullptr,true)));
+
+    auto light = Material(Color( 1.0f, 1.0f, 1.0f ));
+    renderer.add(Sphere( 3, Position(-5,0,-5), light ));
+
+    auto diffuse = Material("../scene/materials/Lava/color.jpg", nullptr, "../scene/materials/Lava/gloss.jpg", false);
+//    diffuse.setSpecular(Color(1.0f,1.0f,1.0f));
+    diffuse.setTransparency(0.0f);
+    auto floor = Box(Position{-100,-20,-100},Position{100,-21,100}, diffuse);
+    renderer.add(floor);
+
 
       // Glass Sphere
-      auto transparentMaterial = Material(nullptr, nullptr, nullptr);
-      transparentMaterial.setTransparency(0.5f);
+      auto transparentMaterial = Material("../scene/materials/MetalCastIron2/color.jpg", nullptr, nullptr);
+      transparentMaterial.setTransparency(1.0f);
       auto glassSphere = Sphere(4, Position{-3, -3, 3}, transparentMaterial);
       renderer.add(glassSphere);
 
@@ -145,7 +155,7 @@ public:
     // Get the start time of the execution
     chrono::high_resolution_clock::time_point start = chrono::high_resolution_clock::now();
 
-    renderer.render(20);
+    renderer.render(10);
 
     // Get the end time of the execution and log the duration into the stdout
     chrono::high_resolution_clock::time_point end = chrono::high_resolution_clock::now();
