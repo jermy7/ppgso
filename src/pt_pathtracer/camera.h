@@ -18,7 +18,7 @@ struct Camera {
    * @param height Height of the viewport
    * @return Ray for the giver viewport position with small random deviation applied to support multi-sampling
    */
-  inline Ray generateRay(int x, int y, int width, int height) const {
+  inline Ray generateRay(int x, int y, int width, int height, int fstop, int distance) const {
     // Aspect ration
     float ratio = (float)width/(float)height;
     // Camera deltas
@@ -31,6 +31,15 @@ struct Camera {
                     + vdu * ((float)(-width/2 + x) + glm::linearRand(0.0f, 1.0f))
                     + vdv * ((float)(-height/2 + y) + glm::linearRand(0.0f, 1.0f));
     ray.direction = normalize(ray.direction);
+
+    glm::vec3 focusPoint = ray.point(distance);
+    ray.origin += glm::vec3 {
+            glm::linearRand(-1.0f, 1.0f) / (float)fstop,
+            glm::linearRand(-1.0f, 1.0f) / (float)fstop,
+            0
+    };
+    ray.direction = normalize(focusPoint - ray.origin);
+
     return ray;
   }
 };

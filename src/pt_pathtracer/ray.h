@@ -4,7 +4,7 @@
 
 // Global constants
 constexpr float INF = std::numeric_limits<float>::max();       // Will be used for infinity
-constexpr float EPS = std::numeric_limits<float>::epsilon();   // Numerical epsilon
+constexpr float EPS = 0.0001; //std::numeric_limits<float>::epsilon();   // Numerical epsilon
 const float DELTA = std::sqrt(EPS);                             // Delta to use
 
 // Definitions of common types for readability

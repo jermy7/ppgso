@@ -23,8 +23,7 @@ struct TransformedShape final : public Shape {
   Vector scale = {1, 1, 1};
   Position position = {0, 0, 0};
 
-  template<typename T>
-  TransformedShape(T s) : shape{std::make_unique<T>(std::move(s))} {}
+  TransformedShape( std::unique_ptr<Shape> s) : shape{std::move(s)} {}
 
   virtual Hit intersect(const Ray& ray) const override {
     // Compute model matrix and inverse
